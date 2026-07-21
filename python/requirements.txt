@@ -1,0 +1,27 @@
+# Core runtime dependencies. PyTorch nightly는 별도 인덱스에서 설치.
+#
+# PyTorch nightly (RTX 5070 / Blackwell sm_120 대응):
+#   pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
+#
+# SAT-HMR 자체는 서브모듈/클론으로 관리 (여기 requirements에 넣지 않음).
+
+numpy>=1.24
+scipy>=1.11
+opencv-python>=4.9
+pyrealsense2>=2.55  # Intel RealSense D455 color stream (required for default source)
+
+# --- SAT-HMR realtime inference (see docs/sat_hmr_integration.md) ---
+pyyaml
+smplx>=0.1.28
+chumpy>=0.70   # patched at import (see docs/fix_chumpy.md); numpy 2.x compat
+xformers>=0.0.35  # falls back to native SDPA on Blackwell (sm_120) via wrapper monkey-patch
+accelerate>=1.10  # SAT-HMR engine imports it (unused in our inference path but resolved)
+huggingface_hub   # for `sat_644.pth` fetch via tools/download_sat_hmr.py
+
+# --- 디버그 전용 (프로덕션 경로에서 import 금지, /python/debug 에서만 사용) ---
+# smplx        # SMPL forward에 사용, 모델 파일은 별도 다운로드 필요
+# trimesh      # 메시 헬퍼
+# pyrender     # 3D 렌더 필요 시
+
+# --- 개발 도구 ---
+pytest>=7.4

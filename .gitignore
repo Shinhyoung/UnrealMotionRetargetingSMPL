@@ -1,0 +1,52 @@
+# --- Unreal Engine build artifacts ---
+unreal/Binaries/
+unreal/Intermediate/
+unreal/Saved/
+unreal/DerivedDataCache/
+unreal/*.sln
+unreal/*.suo
+unreal/*.sdf
+unreal/*.opensdf
+unreal/*.opendb
+unreal/*.VC.db
+unreal/*.VC.opendb
+unreal/.vs/
+unreal/.vscode/
+unreal/.idea/
+
+# --- Unreal Content (default template + SMPL-derived assets) ---
+# Content includes the UE mannequin template (hundreds of MB) — regenerate
+# by creating a fresh Third Person project or restore from your own backup.
+unreal/Content/
+
+# --- SMPL model & derivatives (research-only license, DO NOT redistribute) ---
+smpl_model.bin
+smpl_weights.npz
+smpl_rest.json
+smpl_tpose.obj
+SMPL_Skeleton.fbx
+
+# --- User-specific calibration (regenerate with tools/calibrate_*.py) ---
+pelvis_rest.npy
+bone_correction.npz
+rest_pose_offset.npy
+rest_pose_offset*.npy
+ue_ref_pose.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Claude Code runtime state ---
+.claude/
