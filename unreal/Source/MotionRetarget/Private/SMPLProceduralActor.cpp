@@ -40,17 +40,33 @@ void ASMPLProceduralActor::BeginPlay()
         BodyPose[i] = FQuat::Identity;
     }
 
-    // Precompute triangle indices (static across ticks).
-    // SmplYupMetersToUEcm uses a chirality-preserving (det=+1) basis, which
-    // flips face winding relative to SMPL's original mesh. Swap vertices 1 and
-    // 2 of every triangle so UE's back-face culling keeps the outside visible.
+    // Precompute triangle indices per material section.
+    // SmplYupMetersToUEcm uses chirality-preserving (det=+1) basis → swap
+    // vertex 1 and 2 of every triangle so back-face culling keeps outside visible.
     const TArray<int32>& Faces = Model.GetFaces();
+    const TArray<int32>& FaceMatIds = Model.GetFaceMaterialIds();
+    const int32 NumMaterials = FMath::Max(1, Model.GetMaterialNames().Num());
+    SectionTriangles.SetNum(NumMaterials);
+    for (auto& S : SectionTriangles) { S.Reset(); }
+
+    const int32 NumFaces = Faces.Num() / 3;
+    for (int32 f = 0; f < NumFaces; ++f)
+    {
+        const int32 MatId = FaceMatIds.IsValidIndex(f)
+            ? FMath::Clamp(FaceMatIds[f], 0, NumMaterials - 1) : 0;
+        TArray<int32>& S = SectionTriangles[MatId];
+        S.Add(Faces[f * 3 + 0]);
+        S.Add(Faces[f * 3 + 2]);   // swapped
+        S.Add(Faces[f * 3 + 1]);
+    }
+
+    // Also keep flat Triangles (used for normal recomputation across all faces).
     Triangles.SetNumUninitialized(Faces.Num());
     for (int32 t = 0; t < Faces.Num(); t += 3)
     {
         Triangles[t + 0] = Faces[t + 0];
-        Triangles[t + 1] = Faces[t + 2];   // swapped
-        Triangles[t + 2] = Faces[t + 1];   // swapped
+        Triangles[t + 1] = Faces[t + 2];
+        Triangles[t + 2] = Faces[t + 1];
     }
 
     EnsureMeshSectionInitialized();
@@ -87,9 +103,19 @@ void ASMPLProceduralActor::EnsureMeshSectionInitialized()
     // Rest vertices from model (SMPL Y-up) → UE cm.
     UEVerts.SetNumUninitialized(N);
     Normals.SetNumZeroed(N);              // filled once we have vertices
-    UV0.SetNumZeroed(N);
     VertexColors.Init(FLinearColor::White, N);
     Tangents.Empty();
+
+    // UV0: from blob (v2) or zeros (v1). Copy once — static across ticks.
+    const TArray<FVector2D>& ModelUV = Model.GetUV0();
+    if (ModelUV.Num() == N)
+    {
+        UV0 = ModelUV;
+    }
+    else
+    {
+        UV0.SetNumZeroed(N);
+    }
 
     // Initial pose = identity: compute rest verts.
     Model.ComputeVertices(FQuat::Identity, BodyPose, FVector::ZeroVector, SmplVertsYup);
@@ -117,12 +143,20 @@ void ASMPLProceduralActor::EnsureMeshSectionInitialized()
         Nv.Normalize();
     }
 
-    ProceduralMesh->CreateMeshSection_LinearColor(
-        0, UEVerts, Triangles, Normals, UV0, VertexColors, Tangents, false /*create collision*/);
-
-    if (MeshMaterial)
+    // One mesh section per material. Shared vertex array (wastes a bit of
+    // memory but avoids per-section vertex remapping every tick).
+    const TArray<FString>& MatNames = Model.GetMaterialNames();
+    UE_LOG(LogSMPLActor, Display, TEXT("SMPL materials (%d):"), SectionTriangles.Num());
+    for (int32 s = 0; s < SectionTriangles.Num(); ++s)
     {
-        ProceduralMesh->SetMaterial(0, MeshMaterial);
+        const FString Name = MatNames.IsValidIndex(s) ? MatNames[s] : FString::Printf(TEXT("slot_%d"), s);
+        UE_LOG(LogSMPLActor, Display, TEXT("  [%d] '%s' (%d tris)"), s, *Name, SectionTriangles[s].Num() / 3);
+        ProceduralMesh->CreateMeshSection_LinearColor(
+            s, UEVerts, SectionTriangles[s], Normals, UV0, VertexColors, Tangents, false);
+        if (Materials.IsValidIndex(s) && Materials[s])
+        {
+            ProceduralMesh->SetMaterial(s, Materials[s]);
+        }
     }
 }
 
@@ -164,8 +198,14 @@ void ASMPLProceduralActor::Tick(float DeltaSeconds)
     }
     const FVector RootTrans = Data.RootTranslation;    // SMPL Y-up meters
 
-    // Compute vertices in SMPL Y-up.
-    Model.ComputeVertices(GlobalOrient, BodyPose, RootTrans, SmplVertsYup);
+    // FK → (optional) foot IK → LBS. Splitting the phases lets ApplyFootIK
+    // override hip/knee/ankle transforms so LBS renders a planted foot.
+    Model.ComputeJointWorlds(GlobalOrient, BodyPose, RootTrans, JointWorlds);
+    if (bEnableFootIK)
+    {
+        ApplyFootIK(DeltaSeconds);
+    }
+    Model.ComputeVerticesFromJoints(JointWorlds, SmplVertsYup);
 
     // Convert to UE Z-up cm.
     const int32 N = SmplVertsYup.Num();
@@ -217,6 +257,134 @@ void ASMPLProceduralActor::UpdateMeshFromSmplVerts()
         Nv.Normalize();
     }
 
-    ProceduralMesh->UpdateMeshSection_LinearColor(
-        0, UEVerts, Normals, UV0, VertexColors, Tangents);
+    // Update every material section with the same vertex data.
+    for (int32 s = 0; s < SectionTriangles.Num(); ++s)
+    {
+        ProceduralMesh->UpdateMeshSection_LinearColor(
+            s, UEVerts, Normals, UV0, VertexColors, Tangents);
+    }
+}
+
+
+// SMPL joint indices: 1=L_hip, 4=L_knee, 7=L_ankle, 10=L_foot,
+//                     2=R_hip, 5=R_knee, 8=R_ankle, 11=R_foot.
+static void SolveLegIK(
+    TArray<FTransform>& Joints,
+    int32 HipIdx, int32 KneeIdx, int32 AnkleIdx, int32 FootIdx,
+    const FVector& Target)
+{
+    const FVector H = Joints[HipIdx].GetLocation();
+    const FVector K_orig = Joints[KneeIdx].GetLocation();
+    const FVector A_orig = Joints[AnkleIdx].GetLocation();
+
+    const float L1 = FVector::Dist(H, K_orig);
+    const float L2 = FVector::Dist(K_orig, A_orig);
+    if (L1 < 1e-4f || L2 < 1e-4f)
+    {
+        return;
+    }
+
+    FVector HT = Target - H;
+    float D = HT.Size();
+    if (D < 1e-4f)
+    {
+        return;
+    }
+    // Clamp target so the leg can reach without singularity.
+    const float DMax = L1 + L2 - 1e-3f;
+    if (D > DMax)
+    {
+        HT *= (DMax / D);
+        D = DMax;
+    }
+    const FVector Dir = HT / D;
+
+    // Preserve the current bend direction: knee's projection onto plane
+    // perpendicular to Dir stays on the same side of Dir.
+    const FVector KneeDirOrig = (K_orig - H).GetSafeNormal();
+    FVector BendAxis = FVector::CrossProduct(Dir, KneeDirOrig);
+    if (!BendAxis.Normalize())
+    {
+        // Straight leg — no natural bend axis. Just place ankle at target and bail.
+        Joints[AnkleIdx].SetLocation(Target);
+        const FVector Delta = Target - A_orig;
+        Joints[FootIdx].SetLocation(Joints[FootIdx].GetLocation() + Delta);
+        return;
+    }
+
+    // Law of cosines: angle at hip between hip→target and hip→knee.
+    float CosAlpha = (L1 * L1 + D * D - L2 * L2) / (2.0f * L1 * D);
+    CosAlpha = FMath::Clamp(CosAlpha, -1.0f, 1.0f);
+    const float Alpha = FMath::Acos(CosAlpha);
+
+    const FQuat RotAtHip(BendAxis, Alpha);
+    const FVector KneeDir = RotAtHip.RotateVector(Dir);
+    const FVector K_new = H + KneeDir * L1;
+
+    // Update hip via delta rotation (preserves original twist / roll).
+    const FVector OldKneeDirFromHip = (K_orig - H).GetSafeNormal();
+    const FQuat HipDelta = FQuat::FindBetweenNormals(OldKneeDirFromHip, KneeDir);
+    Joints[HipIdx].SetRotation(HipDelta * Joints[HipIdx].GetRotation());
+    // Hip location unchanged (fixed by parent chain).
+
+    // Update knee: new location, delta rotation from original ankle direction.
+    Joints[KneeIdx].SetLocation(K_new);
+    const FVector OldAnkleDirFromKnee = (A_orig - K_orig).GetSafeNormal();
+    const FVector NewAnkleDirFromKnee = (Target - K_new).GetSafeNormal();
+    const FQuat KneeDelta = FQuat::FindBetweenNormals(OldAnkleDirFromKnee, NewAnkleDirFromKnee);
+    Joints[KneeIdx].SetRotation(KneeDelta * Joints[KneeIdx].GetRotation());
+
+    // Snap ankle to target; shift foot by ankle delta (rotation preserved).
+    const FVector AnkleDelta = Target - A_orig;
+    Joints[AnkleIdx].SetLocation(Target);
+    Joints[FootIdx].SetLocation(Joints[FootIdx].GetLocation() + AnkleDelta);
+}
+
+
+void ASMPLProceduralActor::ApplyFootIK(float DeltaSeconds)
+{
+    if (JointWorlds.Num() < 12)
+    {
+        return;
+    }
+
+    // Per-foot contact update + IK solve. Speed in SMPL Y-up meters/sec.
+    auto Update = [&](FFootIKState& State, int32 HipIdx, int32 KneeIdx, int32 AnkleIdx, int32 FootIdx)
+    {
+        const FVector Cur = JointWorlds[AnkleIdx].GetLocation();
+
+        float Speed = 0.0f;
+        if (State.bHasLastPos && DeltaSeconds > 1e-4f)
+        {
+            Speed = FVector::Dist(Cur, State.LastPos) / DeltaSeconds;
+        }
+        // EMA smoothing so a single fast frame doesn't release the lock.
+        State.SmoothedSpeed = 0.6f * State.SmoothedSpeed + 0.4f * Speed;
+        State.LastPos = Cur;
+        State.bHasLastPos = true;
+
+        if (State.bPlanted)
+        {
+            if (State.SmoothedSpeed > FootReleaseSpeed)
+            {
+                State.bPlanted = false;
+            }
+        }
+        else
+        {
+            if (State.SmoothedSpeed < FootPlantSpeed)
+            {
+                State.bPlanted = true;
+                State.LockedPos = Cur;
+            }
+        }
+
+        if (State.bPlanted)
+        {
+            SolveLegIK(JointWorlds, HipIdx, KneeIdx, AnkleIdx, FootIdx, State.LockedPos);
+        }
+    };
+
+    Update(LeftFootState, 1, 4, 7, 10);
+    Update(RightFootState, 2, 5, 8, 11);
 }

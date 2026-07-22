@@ -20,11 +20,15 @@ unreal/.idea/
 unreal/Content/
 
 # --- SMPL model & derivatives (research-only license, DO NOT redistribute) ---
-smpl_model.bin
+smpl_model*.bin
 smpl_weights.npz
 smpl_rest.json
 smpl_tpose.obj
 SMPL_Skeleton.fbx
+*_textures/
+
+# --- Custom character source files (Mixamo etc — user's own downloads) ---
+*.fbx
 
 # --- User-specific calibration (regenerate with tools/calibrate_*.py) ---
 pelvis_rest.npy

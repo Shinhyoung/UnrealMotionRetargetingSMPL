@@ -39,9 +39,14 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL")
     FString SMPLBlobPath = TEXT("c:/0.shinhyoung/Project/1.Retargeting/MRetargeting/smpl_model.bin");
 
-    /** Optional material to apply to the rendered mesh section. */
+    /**
+     * Materials — one per mesh section (matches the source FBX's material slots).
+     * Slot names are logged at load time; assign a material to each index in order.
+     * Fallback: if empty or has fewer entries than sections, remaining sections
+     * use the default material (usually gray).
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL")
-    UMaterialInterface* MeshMaterial = nullptr;
+    TArray<UMaterialInterface*> Materials;
 
     /**
      * Mirror the root position across the YZ-plane in UE world so the mannequin
@@ -61,6 +66,18 @@ public:
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL")
     bool bInvertRootLR = true;
+
+    /** Enable foot IK: lock a foot's world position when its vertical velocity is low. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL|FootIK")
+    bool bEnableFootIK = true;
+
+    /** Foot planted when its smoothed speed (SMPL meters/sec) drops below this. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL|FootIK", meta = (ClampMin = "0.01"))
+    float FootPlantSpeed = 0.15f;
+
+    /** Foot released when smoothed speed rises above this. Must be > FootPlantSpeed. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL|FootIK", meta = (ClampMin = "0.01"))
+    float FootReleaseSpeed = 0.4f;
 
     /** ProceduralMeshComponent that owns the SMPL mesh. */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SMPL")
@@ -86,12 +103,30 @@ private:
     TArray<FVector2D> UV0;                  // dummy zero UVs
     TArray<FLinearColor> VertexColors;      // white
     TArray<FProcMeshTangent> Tangents;      // empty
+    TArray<FTransform> JointWorlds;         // per-joint FK output, mutated by foot IK
+
+    /** Per-material section triangles (indices into global vertex array). */
+    TArray<TArray<int32>> SectionTriangles;
 
     /** Body pose scratch (23 quats). */
     TArray<FQuat> BodyPose;
 
+    /** Per-foot planting state for foot IK. */
+    struct FFootIKState
+    {
+        bool bPlanted = false;
+        FVector LockedPos = FVector::ZeroVector;   // SMPL Y-up meters
+        FVector LastPos = FVector::ZeroVector;
+        float SmoothedSpeed = 0.0f;
+        bool bHasLastPos = false;
+    };
+    FFootIKState LeftFootState;
+    FFootIKState RightFootState;
+
     void EnsureMeshSectionInitialized();
     void UpdateMeshFromSmplVerts();
+    /** Modifies JointWorlds in-place: locks ankle at planted position via two-bone IK. */
+    void ApplyFootIK(float DeltaSeconds);
 
     /** Convert SMPL Y-up meters vector → UE Z-up cm. */
     static FVector SmplYupMetersToUEcm(const FVector& V);

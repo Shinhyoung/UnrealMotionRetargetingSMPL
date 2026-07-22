@@ -121,6 +121,24 @@ RTX 5070은 Blackwell(sm_120)이라 **안정판 PyTorch에서 인식되지 않�
 - SMPL θ는 **로컬(부모 기준) 회전**이므로 로컬 트랜스폼 회전을 교체하는 방식으로 다룬다.
 - 회전은 `FQuat` 그대로 적용하고 `.Rotator()` 변환을 거치지 않는다.
 
+### 4.7 [현재 구현] Option F: SMPL LBS Direct in UE (2026-07-21~)
+**FAnimNode 방식 대신 채택된 현재 아키텍처**:
+- `ASMPLProceduralActor` + `FSMPLModel` (Public/Private in `unreal/Source/MotionRetarget`)
+- UE Skeletal system 우회. `FSMPLModel::ComputeVertices` 가 CPU 에서 SMPL LBS 직접 실행 → `UProceduralMeshComponent` 로 매 프레임 vertex 갱신
+- Python 은 `--smpl-native` 로 raw SMPL Y-up quat + meters root 를 전송, UE 액터가 basis change 수행
+- 5개 축 정합 (depth / 위치 L-R / yaw / tilt / 팔·다리 L-R) 실측 완료 — README 의 "5개 축 정합" 표 참조
+- Foot IK: two-bone IK 로 planted foot 위치 lock (`SolveLegIK` in SMPLProceduralActor.cpp)
+- Multi-material: blob v3 포맷 + `TArray<UMaterialInterface*> Materials` UPROPERTY
+
+**FAnimNode 접근은 archived** — `AnimNode_RTMotion*` 파일은 남아있지만 실사용 안함.
+
+### 4.8 [현재 지원] 커스텀 캐릭터 (Mixamo / 임의 T-pose FBX)
+- `tools/convert_fbx_to_blob.py` — 헤드리스 Blender 4.5+ 로 자동 변환
+- Mixamo bone → SMPL 24-joint 매핑 (`MIXAMO_TO_SMPL` in `blender_fbx_to_blob.py`)
+- 원본 Mixamo weight 재활용 (fingers/twist bones 는 부모 SMPL joint 로 병합)
+- UV, embedded texture PNG, 다중 material 자동 추출
+- **주의**: Mixamo 캐릭터는 Blender 임포트 시 -Y 방향 (backward) 을 보므로 `blender_to_smpl` 에서 Z 부호 flip 필요 (이미 반영됨)
+
 ---
 
 ## 5. UDP 패킷 프로토콜 (Python ↔ Unreal 계약)

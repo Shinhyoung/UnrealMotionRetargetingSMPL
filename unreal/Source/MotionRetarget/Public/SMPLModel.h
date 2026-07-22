@@ -40,18 +40,41 @@ public:
     const TArray<int32>& GetFaces() const { return FacesFlat; }
 
     /**
-     * Compute per-vertex world positions for the given pose.
-     *
-     *   GlobalOrient : pelvis rotation (SMPL "joint 0")
-     *   BodyPose     : rotations for joints 1..23 (in order) — must be 23 long
-     *   RootTrans    : additional world-space translation applied to pelvis
-     *   OutVertices  : filled with 6890 positions in SMPL Y-up meters
+     * Compute per-vertex world positions for the given pose. Convenience:
+     * runs joint FK then LBS in one call.
      */
     void ComputeVertices(
         const FQuat& GlobalOrient,
         const TArray<FQuat>& BodyPose,
         const FVector& RootTrans,
         TArray<FVector>& OutVertices) const;
+
+    /**
+     * Compute per-joint world transforms (SMPL Y-up meters). Exposed so
+     * callers can inject post-FK modifications (e.g. foot IK) before LBS.
+     */
+    void ComputeJointWorlds(
+        const FQuat& GlobalOrient,
+        const TArray<FQuat>& BodyPose,
+        const FVector& RootTrans,
+        TArray<FTransform>& OutJointWorlds) const;
+
+    /** LBS pass given pre-computed joint world transforms. */
+    void ComputeVerticesFromJoints(
+        const TArray<FTransform>& JointWorlds,
+        TArray<FVector>& OutVertices) const;
+
+    /** Rest joint positions (SMPL Y-up meters). Read-only. */
+    const TArray<FVector>& GetRestJoints() const { return RestJoints; }
+
+    /** Per-vertex UV0. Empty for v1 blobs; length == NumVerts for v2+. */
+    const TArray<FVector2D>& GetUV0() const { return UV0; }
+
+    /** Material slot names (v3+). Length == number of materials on original mesh. */
+    const TArray<FString>& GetMaterialNames() const { return MaterialNames; }
+
+    /** Per-triangle material id (0..NumMaterials-1). Length == NumFaces. */
+    const TArray<int32>& GetFaceMaterialIds() const { return FaceMaterialIds; }
 
 private:
     int32 NumJoints = 0;
@@ -62,6 +85,9 @@ private:
     TArray<FVector> RestJoints;           // NumJoints, SMPL Y-up world
     TArray<FVector> RestVerts;            // NumVerts, SMPL Y-up world
     TArray<int32> FacesFlat;              // NumFaces * 3
+    TArray<FVector2D> UV0;                // NumVerts (v2+) or empty (v1)
+    TArray<FString> MaterialNames;        // Material slot names (v3+)
+    TArray<int32> FaceMaterialIds;        // NumFaces, in [0, NumMaterials) (v3+)
 
     /**
      * Sparse skinning weights stored as CSR-like flat arrays (avoids nested
@@ -77,10 +103,4 @@ private:
 
     /** Precomputed inverse translation of each joint at rest (rest orient is identity). */
     TArray<FVector> RestJointsNeg;
-
-    void ComputeJointWorlds(
-        const FQuat& GlobalOrient,
-        const TArray<FQuat>& BodyPose,
-        const FVector& RootTrans,
-        TArray<FTransform>& OutJointWorlds) const;
 };

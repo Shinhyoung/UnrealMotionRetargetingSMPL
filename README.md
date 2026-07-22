@@ -147,6 +147,56 @@ python -u main.py --source realsense --conf-thresh 0.3 `
 
 전체 플래그 목록: `python main.py --help`
 
+## 커스텀 캐릭터 사용 (Mixamo 등)
+
+기본 SMPL 마네킹 외에 Mixamo 캐릭터 등 임의 T-pose FBX 를 사용할 수 있습니다. Blender 헤드리스 자동 변환 도구 제공:
+
+```powershell
+cd python
+python tools/convert_fbx_to_blob.py `
+    --fbx "path/to/character.fbx" `
+    --smpl-pkl "path/to/SMPL_NEUTRAL.pkl" `
+    --out "path/to/character_model.bin"
+```
+
+자동으로:
+1. FBX 임포트 (Blender 4.5+ 필요, 자동 감지)
+2. Mixamo bone 이름 → SMPL 24-joint 매핑 (원본 Mixamo weights 재활용 — bone-heat 자동 weight 대비 훨씬 자연스러운 deformation)
+3. 다중 mesh 파트 join + material 정보 보존
+4. Mesh scale 정규화, 좌표계 변환 (Blender Z-up → SMPL Y-up)
+5. UV 추출
+6. Embedded 텍스처 PNG 자동 저장 (`<blob>_textures/` 폴더)
+7. Blob v3 파일 write
+
+**UE 에 적용**:
+1. `smpl_model_xxx_textures/` 폴더의 PNG 들을 UE Content Browser 로 드래그 (Texture2D 임포트)
+2. **Normal map** 파일들은 `Compression Settings = Normalmap` 로 재임포트 (기본 Color 는 아티팩트 유발)
+3. 각 material 별로 UE Material 생성 (예: `M_Body`, `M_Hair`) — Diffuse → Base Color, Normal → Normal, 필요시 Roughness/Metallic 연결
+4. 액터 Details → SMPL → **Materials** 배열: 각 인덱스에 해당 material 지정 (Output Log 에 표시된 순서대로)
+5. **SMPL Blob Path** 를 새 blob 파일로 변경 → PIE 재시작
+
+Mixamo 스타일 카툰 룩 재현: Roughness=1.0 constant + Normal 생략 + Metallic=0.
+
+## Foot IK
+
+기본으로 활성화된 two-bone IK 가 발이 지면에 planting 됐을 때 미끄러짐 방지:
+- 액터 Details → **SMPL | FootIK**
+  - `Enable Foot IK` (기본 true)
+  - `Foot Plant Speed` (기본 0.15 m/s — 이 이하 속도면 planted)
+  - `Foot Release Speed` (기본 0.4 m/s — 이 이상이면 발이 떨어짐)
+
+Twist 보존 delta rotation 방식으로 다리 tremor 최소화. 단, 미끄러짐 완전 제거는 아니고 자연스러운 정도.
+
+## Blob 포맷 (SMPB)
+
+| Version | 추가 필드 | 용도 |
+|---|---|---|
+| v1 | (기본) parents, rest_joints, rest_verts, faces, weights | 초기 SMPL 렌더 |
+| v2 | + UVs (per-vertex) | 텍스처 매핑 |
+| v3 | + material_names, face_material_ids | 다중 material 지원 |
+
+UE 액터가 v1/v2/v3 모두 로드 가능 (backward compat). `dump_smpl_blob.py` 는 v1, `convert_fbx_to_blob.py` 는 v3 생성.
+
 ## 구조
 
 ```
@@ -180,6 +230,17 @@ docs/
   unreal_setup.md        # UE 프로젝트 설정
   ue_ik_retargeter.md    # 대안 방식 (IK Retargeter) 기록
 ```
+
+## 주요 도구
+
+| 파일 | 용도 |
+|---|---|
+| `main.py` | 파이프라인 진입점 |
+| `tools/dump_smpl_blob.py` | SMPL PKL → 기본 SMPL blob (v1) |
+| `tools/convert_fbx_to_blob.py` | 임의 T-pose FBX → blob (v3, wrapper) |
+| `tools/blender_fbx_to_blob.py` | Blender 헤드리스 스크립트 (wrapper 가 호출) |
+| `tools/calibrate_pelvis_rest.py` | Pelvis baseline 캘리브레이션 |
+| `tools/verify_smpl_blob.py` | Blob LBS ↔ smplx 레퍼런스 비교 검증 |
 
 ## 라이선스
 

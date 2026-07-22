@@ -39,7 +39,7 @@ bool FSMPLModel::LoadFromFile(const FString& FilePath)
     }
     p += 4;
     const uint32 Version = ReadU32();
-    if (Version != 1)
+    if (Version < 1 || Version > 3)
     {
         UE_LOG(LogSMPLModel, Error, TEXT("Unsupported SMPL blob version %u"), Version);
         return false;
@@ -103,6 +103,48 @@ bool FSMPLModel::LoadFromFile(const FString& FilePath)
     }
     p += sizeof(float) * NumVerts * NumJoints;
 
+    // Optional per-vertex UV (v2+). Zero-init for v1.
+    UV0.SetNumUninitialized(NumVerts);
+    if (Version >= 2)
+    {
+        for (int32 i = 0; i < NumVerts; ++i)
+        {
+            float uv[2];
+            FMemory::Memcpy(uv, p, 8);
+            p += 8;
+            UV0[i] = FVector2D(uv[0], uv[1]);
+        }
+    }
+    else
+    {
+        for (int32 i = 0; i < NumVerts; ++i)
+        {
+            UV0[i] = FVector2D::ZeroVector;
+        }
+    }
+
+    // Optional multi-material (v3+): names + per-face material id.
+    MaterialNames.Reset();
+    FaceMaterialIds.SetNumUninitialized(NumFaces);
+    if (Version >= 3)
+    {
+        const uint32 NM = ReadU32();
+        MaterialNames.Reserve(NM);
+        for (uint32 i = 0; i < NM; ++i)
+        {
+            const uint32 NameLen = ReadU32();
+            MaterialNames.Add(FString(NameLen, (const ANSICHAR*)p));
+            p += NameLen;
+        }
+        FMemory::Memcpy(FaceMaterialIds.GetData(), p, sizeof(int32) * NumFaces);
+        p += sizeof(int32) * NumFaces;
+    }
+    else
+    {
+        MaterialNames.Add(TEXT("default"));
+        for (int32 i = 0; i < NumFaces; ++i) FaceMaterialIds[i] = 0;
+    }
+
     // Precompute negated rest joint positions. At rest all joint rotations
     // are identity, so rest_world_inv is simply translation(-RestJoints[i]).
     // Storing negated position is enough — we combine inline below.
@@ -150,20 +192,24 @@ void FSMPLModel::ComputeVertices(
     const FVector& RootTrans,
     TArray<FVector>& OutVertices) const
 {
+    TArray<FTransform> JointWorlds;
+    ComputeJointWorlds(GlobalOrient, BodyPose, RootTrans, JointWorlds);
+    ComputeVerticesFromJoints(JointWorlds, OutVertices);
+}
+
+
+void FSMPLModel::ComputeVerticesFromJoints(
+    const TArray<FTransform>& JointWorlds,
+    TArray<FVector>& OutVertices) const
+{
     if (NumJoints == 0 || NumVerts == 0)
     {
         OutVertices.Reset();
         return;
     }
-    check(BodyPose.Num() == NumJoints - 1);
+    check(JointWorlds.Num() == NumJoints);
 
-    // 1) Joint world transforms.
-    TArray<FTransform> JointWorlds;
-    ComputeJointWorlds(GlobalOrient, BodyPose, RootTrans, JointWorlds);
-
-    // 2) LBS: for each vertex, blend the (per-bone) skinned position.
-    //   skin_pos_by_bone_j(v) = joint_world[j].TransformPosition( v_rest + RestJointsNeg[j] )
-    //   v_deformed = sum_j weights[v,j] * skin_pos_by_bone_j(v)
+    // LBS: v_deformed = sum_j weights[v,j] * joint_world[j].TransformPosition(v_rest - joint_rest[j])
     OutVertices.SetNumUninitialized(NumVerts);
     for (int32 v = 0; v < NumVerts; ++v)
     {
