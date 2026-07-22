@@ -242,6 +242,51 @@ class DepthVerifier:
         return np.array([x_cam, -y_cam, z_meas_m], dtype=np.float64)
 
 
+    def corrected_root_from_bbox(
+        self,
+        bbox: np.ndarray,                 # (4,) x1,y1,x2,y2 in original frame pixels
+        depth_mm: np.ndarray,             # (H, W) uint16 aligned depth
+        current_root_smpl: np.ndarray,    # (3,) current SMPL Y-up meters
+        percentile: float = 25.0,
+    ) -> Optional[np.ndarray]:
+        """Depth correction from a person bbox — foreground-biased median.
+
+        Samples the middle 60% width × 30-70% height of the bbox (roughly the
+        torso), keeps valid depths, returns the ``percentile``-th (default 25th)
+        for foreground bias — this suppresses stray background pixels (walls
+        behind the person) that a naive center-median would include.
+        """
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        w = max(0, x2 - x1)
+        h = max(0, y2 - y1)
+        if w < 20 or h < 40:
+            return None
+        # Torso region: middle-width × upper-mid height (pelvis area).
+        tx1 = int(x1 + 0.20 * w)
+        tx2 = int(x1 + 0.80 * w)
+        ty1 = int(y1 + 0.30 * h)
+        ty2 = int(y1 + 0.70 * h)
+
+        H, W = depth_mm.shape
+        tx1 = max(0, tx1); tx2 = min(W, tx2)
+        ty1 = max(0, ty1); ty2 = min(H, ty2)
+        if tx2 <= tx1 or ty2 <= ty1:
+            return None
+
+        patch = depth_mm[ty1:ty2, tx1:tx2]
+        valid = patch[patch > 0]
+        if valid.size < 20:
+            return None
+        # Lower-quartile: closer than median → biases toward the person
+        # (foreground) over occasional background pixels within the bbox.
+        z_m = float(np.percentile(valid, percentile)) / 1000.0
+        if z_m <= 0.2 or z_m > 8.0:
+            return None
+        new_root = current_root_smpl.copy().astype(np.float64)
+        new_root[2] = z_m
+        return new_root
+
+
 def format_limb_summary(report: JointDepthReport) -> str:
     """One-line diagnostic string suitable for periodic logging."""
     summary = report.summarize_limbs()

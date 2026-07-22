@@ -139,6 +139,24 @@ RTX 5070은 Blackwell(sm_120)이라 **안정판 PyTorch에서 인식되지 않�
 - UV, embedded texture PNG, 다중 material 자동 추출
 - **주의**: Mixamo 캐릭터는 Blender 임포트 시 -Y 방향 (backward) 을 보므로 `blender_to_smpl` 에서 Z 부호 flip 필요 (이미 반영됨)
 
+### 4.9 [현재 지원] SMPL-X (body + hands) — SMPLest-X + `--smpl-x` blob
+- Detector: `--detector smplest-x` — [MotrixLab/SMPLest-X](https://github.com/MotrixLab/SMPLest-X) 통합 (별도 conda env 권장)
+- Wrapper: `python/detectors/smplest_x_wrapper.py` — YOLOv8x 로 person detection → per-crop SMPLest-X 추론 → 55-joint output (body 22 + face-identity 3 + hands 30)
+- `--joint-format smplx`: 55 quats 를 UDP 로 전송 (기존 24 quats 와 wire format 호환 — packet header 에 `joint_count` 필드)
+- Blob v3 55-joint 캐릭터: `--smpl-x` 로 변환 (`MIXAMO_TO_SMPLX` 매핑에 finger bones 30개 추가). 없는 finger 는 wrist 위치 fallback (Ch14 같은 4손가락 캐릭터도 처리).
+- bf16 autocast 적용 (Blackwell GPU, ~1.5-2x 속도 개선)
+
+### 4.10 [현재 지원] 다중 인원 (SAT-HMR)
+- `--max-persons N` (1-3): 카메라 Z 기준 가까운 순으로 필터
+- UE 에 `SMPLProceduralActor` N 인스턴스 (`Ctrl+D` 로 복제) + Person Id = 1, 2, 3
+- Blob path 모두 동일 (같은 마네킹) 가능, material 별도 지정도 가능
+- SMPLest-X 는 crop-based 단일 인물 유리 → launcher 에서 자동 1 로 고정
+
+### 4.11 [현재 지원] Launcher UI (`python/launcher.py`)
+- Tkinter 기반. Detector / 인원 수 / 디버그 오버레이 / smoothing α 선택 후 실행 버튼.
+- 백그라운드 스레드로 stdout 폴링 → UI 안 얼음.
+- SAT-HMR ↔ SMPLest-X env 자동 라우팅 (base anaconda ↔ smplestx conda env).
+
 ---
 
 ## 5. UDP 패킷 프로토콜 (Python ↔ Unreal 계약)

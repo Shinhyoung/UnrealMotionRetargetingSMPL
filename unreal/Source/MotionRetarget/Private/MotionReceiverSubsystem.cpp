@@ -14,15 +14,17 @@ DEFINE_LOG_CATEGORY_STATIC(LogMotionRetarget, Log, All);
 
 namespace
 {
-	// Wire format from docs/protocol.md (little-endian, verified in test_packet.py):
+	// Wire format v2 (variable joint count per person):
 	//   uint32 frame_id
 	//   uint8  person_count
-	//   per person: uint16 pid, float32 x3 root, float32 x(24*4) quats (xyzw)
+	//   per person:
+	//     uint16 pid, uint8 joint_count, float32 x3 root, float32 x(joint_count*4) quats
+	//   joint_count = 24 for SMPL, 55 for SMPL-X.
 	constexpr int32 HeaderSize = 5;                         // 4 + 1
-	constexpr int32 NumSmplJoints = 24;
-	constexpr int32 PerPersonSize = 2 + 12 + NumSmplJoints * 16;  // 2 + 12 + 384 = 398
-	constexpr int32 MaxUdpPayload = 65507;                  // IPv4 UDP theoretical max
-	constexpr int32 RecvBufferSize = 1 << 20;               // 1 MiB kernel buf
+	constexpr int32 PersonHeadSize = 2 + 1;                 // pid + joint_count
+	constexpr int32 MaxUdpPayload = 65507;
+	constexpr int32 RecvBufferSize = 1 << 20;
+	constexpr int32 MaxJoints = 128;                        // sanity cap
 
 	template <typename T>
 	FORCEINLINE T ReadLE(const uint8*& Cursor)
@@ -134,15 +136,9 @@ uint32 FMotionUdpReceiver::Run()
 		}
 
 		const uint8* Cursor = Buffer.GetData();
+		const uint8* const CursorEnd = Cursor + BytesRead;
 		const uint32 FrameId = ReadLE<uint32>(Cursor);
 		const uint8 PersonCount = ReadLE<uint8>(Cursor);
-
-		const int32 Expected = HeaderSize + PersonCount * PerPersonSize;
-		if (BytesRead != Expected)
-		{
-			++PacketsDropped;
-			continue;
-		}
 
 		UMotionReceiverSubsystem* OwnerPtr = Owner.Get();
 		if (!OwnerPtr)
@@ -150,25 +146,31 @@ uint32 FMotionUdpReceiver::Run()
 			continue;   // subsystem gone
 		}
 
+		bool bMalformed = false;
 		for (uint8 P = 0; P < PersonCount; ++P)
 		{
+			if (Cursor + PersonHeadSize > CursorEnd) { bMalformed = true; break; }
 			FPersonMotionData Data;
 			Data.LastFrameId = static_cast<int32>(FrameId);
 			Data.PersonId = static_cast<int32>(ReadLE<uint16>(Cursor));
+			const uint8 JointCount = ReadLE<uint8>(Cursor);
+			if (JointCount == 0 || JointCount > MaxJoints) { bMalformed = true; break; }
+
+			const int32 RemainingNeeded = 12 + JointCount * 16;
+			if (Cursor + RemainingNeeded > CursorEnd) { bMalformed = true; break; }
 
 			const float Rx = ReadLE<float>(Cursor);
 			const float Ry = ReadLE<float>(Cursor);
 			const float Rz = ReadLE<float>(Cursor);
 			Data.RootTranslation = FVector(Rx, Ry, Rz);
 
-			Data.BoneRotations.SetNumUninitialized(NumSmplJoints);
-			for (int32 J = 0; J < NumSmplJoints; ++J)
+			Data.BoneRotations.SetNumUninitialized(JointCount);
+			for (int32 J = 0; J < JointCount; ++J)
 			{
 				const float Qx = ReadLE<float>(Cursor);
 				const float Qy = ReadLE<float>(Cursor);
 				const float Qz = ReadLE<float>(Cursor);
 				const float Qw = ReadLE<float>(Cursor);
-				// FQuat and our python xyzw ordering match: (X, Y, Z, W).
 				Data.BoneRotations[J] = FQuat(Qx, Qy, Qz, Qw);
 			}
 
@@ -183,6 +185,7 @@ uint32 FMotionUdpReceiver::Run()
 
 			OwnerPtr->PushMotionFrame(MoveTemp(Data));
 		}
+		if (bMalformed) { ++PacketsDropped; continue; }
 		++PacketsReceived;
 	}
 

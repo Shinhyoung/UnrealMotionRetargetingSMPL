@@ -46,12 +46,32 @@ class PoseDetection:
     debug_verts: Optional[np.ndarray] = None      # (V, 3) in OpenCV camera (Y-down) meters
     debug_intrinsics: Optional[np.ndarray] = None  # (3, 3) pinhole intrinsics for input_size frame
     debug_resize_rate: Optional[float] = None      # frame-size -> input_size scale
+    # SMPL-X extensions (Optional; None for SMPL-only detectors).
+    left_hand_pose: Optional[np.ndarray] = None   # (15, 3) axis-angle, MANO order (index/middle/pinky/ring/thumb)
+    right_hand_pose: Optional[np.ndarray] = None  # (15, 3)
 
     def full_axis_angles(self) -> np.ndarray:
-        """Return (24, 3) axis-angle: [global_orient, body_pose]."""
+        """Return (24, 3) axis-angle: [global_orient, body_pose]. SMPL only."""
         go = np.asarray(self.global_orient, dtype=np.float64).reshape(3)
         bp = np.asarray(self.body_pose, dtype=np.float64).reshape(NUM_SMPL_JOINTS - 1, 3)
         return np.vstack([go[None, :], bp])
+
+    def full_axis_angles_smplx(self) -> np.ndarray:
+        """Return (55, 3) axis-angle in SMPL-X joint order.
+
+        Layout: 22 body (0-21, drops SMPL L_hand/R_hand joints 22-23) +
+        3 face (jaw, L_eye, R_eye — always identity here) +
+        30 hand (15 L + 15 R, zero if left_hand_pose/right_hand_pose are None).
+        """
+        go = np.asarray(self.global_orient, dtype=np.float64).reshape(3)
+        bp = np.asarray(self.body_pose, dtype=np.float64).reshape(NUM_SMPL_JOINTS - 1, 3)
+        body22 = np.vstack([go[None, :], bp[:21]])   # (22, 3): SMPL joints 0..21
+        face3 = np.zeros((3, 3), dtype=np.float64)   # jaw, L_eye, R_eye
+        lh = np.asarray(self.left_hand_pose, dtype=np.float64).reshape(15, 3) \
+             if self.left_hand_pose is not None else np.zeros((15, 3))
+        rh = np.asarray(self.right_hand_pose, dtype=np.float64).reshape(15, 3) \
+             if self.right_hand_pose is not None else np.zeros((15, 3))
+        return np.vstack([body22, face3, lh, rh])
 
 
 class SATHMRDetector:

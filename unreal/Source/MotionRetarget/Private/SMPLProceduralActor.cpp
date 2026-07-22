@@ -183,13 +183,14 @@ void ASMPLProceduralActor::Tick(float DeltaSeconds)
     }
 
     FPersonMotionData Data;
-    if (!Subsystem->GetLatestMotion(PersonId, Data) || Data.BoneRotations.Num() < 24)
+    if (!Subsystem->GetLatestMotion(PersonId, Data) || Data.BoneRotations.Num() < Model.GetNumJoints())
     {
         return;
     }
 
     // In --smpl-native mode:
-    //   Data.BoneRotations : 24 quats in SMPL Y-up (raw axis-angle → quat, no basis change)
+    //   Data.BoneRotations : quats in SMPL Y-up (raw axis-angle → quat, no basis change).
+    //   Length matches Model.GetNumJoints() (24 for SMPL, 55 for SMPL-X).
     //   Data.RootTranslation : SMPL Y-up meters (no basis change, no *100)
     const FQuat& GlobalOrient = Data.BoneRotations[0];
     for (int32 i = 0; i < BodyPose.Num(); ++i)

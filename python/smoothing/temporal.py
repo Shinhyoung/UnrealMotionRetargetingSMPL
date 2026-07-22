@@ -101,7 +101,8 @@ class TemporalSmoother:
 
         Call once per frame per person. Order across persons is irrelevant.
         """
-        q_new = np.asarray(quats_xyzw, dtype=np.float64).reshape(NUM_SMPL_JOINTS, 4)
+        # Joint count is inferred from input (24 for SMPL, 55 for SMPL-X, etc.).
+        q_new = np.asarray(quats_xyzw, dtype=np.float64).reshape(-1, 4)
         r_new = np.asarray(root, dtype=np.float64).reshape(3)
 
         state = self._states.get(person_id)

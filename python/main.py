@@ -60,10 +60,18 @@ def parse_args() -> argparse.Namespace:
                    help="Use MockSATHMRDetector instead of real SAT-HMR.")
     p.add_argument("--n-mock-persons", type=int, default=2,
                    help="Number of synthetic people when --mock is on.")
+    p.add_argument("--detector", choices=("sat-hmr", "smplest-x"), default="sat-hmr",
+                   help="Which pose estimator to use. sat-hmr: SMPL body, multi-person, "
+                        "one-stage (fast). smplest-x: SMPL-X body+hands, single-person "
+                        "per crop (slower, higher fidelity).")
     p.add_argument("--sat-hmr-root", default="c:/0.shinhyoung/Project/SAT-HMR",
                    help="Path to the SAT-HMR repository clone (real detector).")
     p.add_argument("--sat-hmr-ckpt", default="",
                    help="Path to sat_644.pth (defaults to configs/run/demo.yaml value).")
+    p.add_argument("--smplest-x-root", default="",
+                   help="Path to SMPLest-X repository clone.")
+    p.add_argument("--smplest-x-ckpt", default="smplest_x_h",
+                   help="SMPLest-X checkpoint dir name under pretrained_models/.")
     p.add_argument("--conf-thresh", type=float, default=0.3,
                    help="SAT-HMR detection confidence threshold.")
     p.add_argument("--input-size", type=int, default=672,
@@ -153,14 +161,20 @@ def parse_args() -> argparse.Namespace:
                         "pelvis pixel. Cures forward/backward drift caused by "
                         "bbox-size depth ambiguity. Enables depth capture.")
     p.add_argument("--single-front-person", action="store_true",
-                   help="Keep only the front-most detection (min camera-Z) each frame. "
-                        "Simplifies demo to one person; future multi-person work will "
-                        "remove this filter.")
+                   help="Legacy: equivalent to --max-persons 1.")
+    p.add_argument("--max-persons", type=int, default=0,
+                   help="Keep at most N detections (front-most / closest camera-Z) "
+                        "per frame. 0 = no limit (all detected). Each kept detection "
+                        "gets a stable person_id (1..N) via the tracker.")
     p.add_argument("--smpl-native", action="store_true",
                    help="Send raw SMPL Y-up quaternions with NO basis change. "
                         "Used by UE's SMPLProceduralActor (Option F) which runs "
                         "SMPL LBS directly on the CPU and needs original SMPL "
                         "pose parameters. Implies --raw-smpl semantics.")
+    p.add_argument("--joint-format", choices=("smpl", "smplx"), default="smpl",
+                   help="Output joint layout: 'smpl' (24 joints, body-only) "
+                        "or 'smplx' (55 joints — body + face-identity + hands). "
+                        "Use 'smplx' when the UE actor is loaded with a 55-joint blob.")
     return p.parse_args()
 
 
@@ -200,6 +214,17 @@ def open_capture(source: str, args=None):
 def build_detector(args, settings: Settings, keep_debug_output: bool = False):
     if args.mock:
         return MockSATHMRDetector(n_persons=args.n_mock_persons)
+    if args.detector == "smplest-x":
+        if not args.smplest_x_root:
+            raise SystemExit("--detector smplest-x requires --smplest-x-root <path>")
+        from detectors.smplest_x_wrapper import SMPLestXDetector
+        return SMPLestXDetector(
+            smplest_x_root=args.smplest_x_root,
+            ckpt_name=(args.smplest_x_ckpt or "smplest_x_h"),
+            device=settings.model.device,
+            conf_thresh=args.conf_thresh,
+            keep_debug_output=keep_debug_output,
+        )
     from detectors.sat_hmr_wrapper import SATHMRDetector  # deferred import
     return SATHMRDetector(
         sat_hmr_root=args.sat_hmr_root,
@@ -212,28 +237,34 @@ def build_detector(args, settings: Settings, keep_debug_output: bool = False):
 
 
 # SMPL left/right joint pairs (index_left, index_right).
-_LR_PAIRS = (
+_LR_PAIRS_SMPL = (
     (1, 2), (4, 5), (7, 8), (10, 11), (13, 14),
     (16, 17), (18, 19), (20, 21), (22, 23),
+)
+
+# SMPL-X: same body pairs (drop 22/23 SMPL-only L_hand/R_hand) + 15 finger pairs
+# (left hand joints 25-39 ↔ right hand joints 40-54, one-to-one by finger).
+_LR_PAIRS_SMPLX = (
+    (1, 2), (4, 5), (7, 8), (10, 11), (13, 14),
+    (16, 17), (18, 19), (20, 21),
+    # L_eye 23 ↔ R_eye 24
+    (23, 24),
+    # fingers: L_index1..L_thumb3 (25..39) ↔ R_index1..R_thumb3 (40..54)
+    *((25 + k, 40 + k) for k in range(15)),
 )
 
 
 def _swap_lr(quats: np.ndarray) -> np.ndarray:
     """L/R mirror with separate handling for global orient vs body pose.
 
-    Body pose (idx 1-23): swap L/R indices AND reflect across the SMPL YZ
-    plane (F=diag(-1,1,1)) → quat (x, y, z, w) → (x, -y, -z, w). This flips
-    both Y and Z rotations, giving a proper mirror-image body pose.
-
-    Global orient (idx 0): reflect across the SMPL XZ plane (F=diag(1,-1,1))
-    → quat (x, y, z, w) → (-x, y, -z, w). This preserves Y-axis rotation (yaw)
-    while flipping Z-axis rotation (roll/tilt). Needed because the whole-body
-    yaw was already correct without any mirror; only tilt needed inverting.
+    Length-agnostic: uses SMPL pairs for 24 joints, SMPL-X pairs for 55.
     """
+    n = quats.shape[0]
+    pairs = _LR_PAIRS_SMPLX if n >= 55 else _LR_PAIRS_SMPL
     out = quats.copy()
-    for l, r in _LR_PAIRS:
+    for l, r in pairs:
         out[[l, r]] = out[[r, l]]
-    # Body pose: YZ-plane mirror
+    # Body/hand poses (idx 1+): YZ-plane mirror
     out[1:, 1] *= -1
     out[1:, 2] *= -1
     # Global orient: XZ-plane mirror (preserves yaw, flips tilt/pitch)
@@ -254,20 +285,20 @@ def detection_to_ue_payload(
     pelvis_rest_inv: Optional[np.ndarray] = None,
     raw_smpl: bool = False,
     smpl_native: bool = False,
+    joint_format: str = "smpl",
 ) -> tuple:
     """Convert one PoseDetection into the (person_id, root_ue, quats_ue) tuple.
 
-    All heavy per-joint math is here so the main loop stays readable.
-
-    If ``bone_correction`` is provided it must be ``(parent_world_inv, own_world)``
-    of shape ``(24, 4)`` each — 방법 A. When set it supersedes ``rest_offsets``:
-    the per-joint rest-orientation basis change subsumes what the offset-only
-    approach was trying to approximate.
+    ``joint_format='smpl'`` → 24 quats. ``'smplx'`` → 55 quats (body + face
+    identity + hands).
     """
     from transform.rotation import normalize_quat, quat_multiply_xyzw
 
-    aa = det.full_axis_angles()                       # (24, 3)
-    quats_smpl = axis_angle_to_quat_xyzw(aa)          # (24, 4)
+    if joint_format == "smplx":
+        aa = det.full_axis_angles_smplx()             # (55, 3)
+    else:
+        aa = det.full_axis_angles()                   # (24, 3)
+    quats_smpl = axis_angle_to_quat_xyzw(aa)
 
     if smpl_native:
         # SMPL native mode: send RAW SMPL Y-up axis-angle-quats and
@@ -455,30 +486,40 @@ def main() -> int:
             # --- Inference (SAT-HMR or Mock) ---
             detections: List[PoseDetection] = detector.infer(frame)
 
-            # Optional: reduce to the single front-most person (min camera Z).
-            # Root position is in SMPL Y-up meters; camera-forward = +Z, so
-            # the closest person has the smallest Z.
-            if args.single_front_person and detections:
-                detections = [min(detections, key=lambda d: float(d.root_position[2]))]
+            # Reduce to N front-most persons (closest by camera Z in SMPL Y-up).
+            max_n = 1 if args.single_front_person else args.max_persons
+            if max_n > 0 and len(detections) > max_n:
+                detections = sorted(detections,
+                                    key=lambda d: float(d.root_position[2]))[:max_n]
 
-            # --- Depth root lock: replace SAT-HMR monocular root with real depth ---
+            # --- Depth root lock: replace monocular root Z with real depth ---
             if depth_root_lock is not None and depth_frame is not None and depth_frame.size:
                 for det in detections:
-                    if det.debug_verts is None or det.debug_intrinsics is None:
-                        continue
                     root_old = det.root_position.copy()
-                    root_new = depth_root_lock.corrected_root_smpl(
-                        mesh_verts_cam=det.debug_verts,
-                        intrinsics=det.debug_intrinsics,
-                        depth_mm=depth_frame,
-                        resize_rate=det.debug_resize_rate or 1.0,
-                    )
+                    root_new = None
+                    if det.debug_verts is not None and det.debug_intrinsics is not None:
+                        # SAT-HMR: full back-project via mesh + intrinsics
+                        root_new = depth_root_lock.corrected_root_smpl(
+                            mesh_verts_cam=det.debug_verts,
+                            intrinsics=det.debug_intrinsics,
+                            depth_mm=depth_frame,
+                            resize_rate=det.debug_resize_rate or 1.0,
+                        )
+                    elif det.bbox is not None:
+                        # SMPLest-X (or any detector w/o mesh): bbox-center depth sample
+                        root_new = depth_root_lock.corrected_root_from_bbox(
+                            bbox=det.bbox,
+                            depth_mm=depth_frame,
+                            current_root_smpl=det.root_position,
+                        )
+                    else:
+                        continue
                     _depth_lock_stats[0] += 1
                     if root_new is not None:
                         det.root_position = root_new
                         _depth_lock_stats[1] += 1
                         _depth_lock_stats[2] = float(root_new[2])   # last measured Z
-                        _depth_lock_stats[3] = float(root_old[2])   # last SAT-HMR Z
+                        _depth_lock_stats[3] = float(root_old[2])   # last predicted Z
                 if (frame_id % 30) == 0 and _depth_lock_stats[0] > 0:
                     tot, ok, z_meas, z_pred = _depth_lock_stats
                     print(f"[depth-lock] {ok}/{tot} success "
@@ -526,6 +567,7 @@ def main() -> int:
                     pelvis_rest_inv=pelvis_rest_inv,
                     raw_smpl=args.raw_smpl,
                     smpl_native=args.smpl_native,
+                    joint_format=args.joint_format,
                 )
                 quats_ue, root_ue = smoother.step(pid, quats_ue, root_ue)
                 persons_payload.append((pid, root_ue, quats_ue))

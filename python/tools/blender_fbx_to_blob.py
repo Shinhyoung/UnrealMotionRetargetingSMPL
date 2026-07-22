@@ -35,9 +35,56 @@ SMPL_JOINT_NAMES = [
     "L_shoulder", "R_shoulder", "L_elbow", "R_elbow",
     "L_wrist", "R_wrist", "L_hand", "R_hand",
 ]
-NUM_JOINTS = 24
 
-# Mixamo bone name → SMPL joint name
+# SMPL-X: 22 body (same as SMPL 0-21) + 1 jaw + 2 eyes + 15 L hand + 15 R hand = 55.
+# Body 0-21 exactly matches SMPL indices 0-21 (SMPL L_hand=22, R_hand=23 dropped —
+# replaced by MANO 15-per-hand joints). Order per hand: index/middle/pinky/ring/thumb.
+SMPLX_JOINT_NAMES = [
+    # body 0-21 (same as SMPL)
+    "pelvis", "L_hip", "R_hip", "spine1",
+    "L_knee", "R_knee", "spine2",
+    "L_ankle", "R_ankle", "spine3",
+    "L_foot", "R_foot", "neck",
+    "L_collar", "R_collar", "head",
+    "L_shoulder", "R_shoulder", "L_elbow", "R_elbow",
+    "L_wrist", "R_wrist",
+    # face 22-24 (identity for us — Mixamo has no face rig)
+    "jaw", "L_eye", "R_eye",
+    # left hand 25-39
+    "L_index1", "L_index2", "L_index3",
+    "L_middle1", "L_middle2", "L_middle3",
+    "L_pinky1", "L_pinky2", "L_pinky3",
+    "L_ring1", "L_ring2", "L_ring3",
+    "L_thumb1", "L_thumb2", "L_thumb3",
+    # right hand 40-54
+    "R_index1", "R_index2", "R_index3",
+    "R_middle1", "R_middle2", "R_middle3",
+    "R_pinky1", "R_pinky2", "R_pinky3",
+    "R_ring1", "R_ring2", "R_ring3",
+    "R_thumb1", "R_thumb2", "R_thumb3",
+]
+
+# SMPL-X parent indices (built from standard SMPL-X kinematic tree).
+SMPLX_PARENTS = [
+    # body 0-21 (matches SMPL first 22)
+    -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19,
+    # jaw, eyes — parent = head (15)
+    15, 15, 15,
+    # left hand: fingers root = L_wrist (20). Then chain within finger.
+    20, 25, 26,   # L_index 1/2/3
+    20, 28, 29,   # L_middle
+    20, 31, 32,   # L_pinky
+    20, 34, 35,   # L_ring
+    20, 37, 38,   # L_thumb
+    # right hand: root = R_wrist (21)
+    21, 40, 41,
+    21, 43, 44,
+    21, 46, 47,
+    21, 49, 50,
+    21, 52, 53,
+]
+
+# Mixamo bone name → SMPL joint name (24-joint mode)
 MIXAMO_TO_SMPL = {
     "Hips":               "pelvis",
     "LeftUpLeg":          "L_hip",
@@ -65,15 +112,87 @@ MIXAMO_TO_SMPL = {
     "RightHandMiddle1":   "R_hand",
 }
 
+# Mixamo → SMPL-X mapping. Body identical to SMPL, adds per-finger bones.
+# Fingers/twist bones not listed here fold into their nearest mapped ancestor
+# via build_mixamo_to_smplx_index (parent walk).
+MIXAMO_TO_SMPLX = {
+    # body — same as MIXAMO_TO_SMPL except drop the LeftHandMiddle1/RightHandMiddle1
+    # generic 'hand' mappings (SMPL-X uses fingers instead).
+    "Hips":               "pelvis",
+    "LeftUpLeg":          "L_hip",
+    "RightUpLeg":         "R_hip",
+    "Spine":              "spine1",
+    "LeftLeg":            "L_knee",
+    "RightLeg":           "R_knee",
+    "Spine1":             "spine2",
+    "LeftFoot":           "L_ankle",
+    "RightFoot":          "R_ankle",
+    "Spine2":             "spine3",
+    "LeftToeBase":        "L_foot",
+    "RightToeBase":       "R_foot",
+    "Neck":               "neck",
+    "LeftShoulder":       "L_collar",
+    "RightShoulder":      "R_collar",
+    "Head":               "head",
+    "LeftArm":            "L_shoulder",
+    "RightArm":           "R_shoulder",
+    "LeftForeArm":        "L_elbow",
+    "RightForeArm":       "R_elbow",
+    "LeftHand":           "L_wrist",
+    "RightHand":          "R_wrist",
+    # left fingers
+    "LeftHandIndex1":     "L_index1",
+    "LeftHandIndex2":     "L_index2",
+    "LeftHandIndex3":     "L_index3",
+    "LeftHandMiddle1":    "L_middle1",
+    "LeftHandMiddle2":    "L_middle2",
+    "LeftHandMiddle3":    "L_middle3",
+    "LeftHandPinky1":     "L_pinky1",
+    "LeftHandPinky2":     "L_pinky2",
+    "LeftHandPinky3":     "L_pinky3",
+    "LeftHandRing1":      "L_ring1",
+    "LeftHandRing2":      "L_ring2",
+    "LeftHandRing3":      "L_ring3",
+    "LeftHandThumb1":     "L_thumb1",
+    "LeftHandThumb2":     "L_thumb2",
+    "LeftHandThumb3":     "L_thumb3",
+    # right fingers
+    "RightHandIndex1":    "R_index1",
+    "RightHandIndex2":    "R_index2",
+    "RightHandIndex3":    "R_index3",
+    "RightHandMiddle1":   "R_middle1",
+    "RightHandMiddle2":   "R_middle2",
+    "RightHandMiddle3":   "R_middle3",
+    "RightHandPinky1":    "R_pinky1",
+    "RightHandPinky2":    "R_pinky2",
+    "RightHandPinky3":    "R_pinky3",
+    "RightHandRing1":     "R_ring1",
+    "RightHandRing2":     "R_ring2",
+    "RightHandRing3":     "R_ring3",
+    "RightHandThumb1":    "R_thumb1",
+    "RightHandThumb2":    "R_thumb2",
+    "RightHandThumb3":    "R_thumb3",
+    # jaw, eyes not in Mixamo — will remain identity (no motion)
+}
+
+# Runtime selection: set to SMPL_JOINT_NAMES/MIXAMO_TO_SMPL by default,
+# swapped to SMPL-X arrays when --smpl-x flag is present.
+NUM_JOINTS = 24
+
 
 def parse_args():
+    """Positional: <fbx> <smpl_rest_npz> <output.bin> [--smpl-x]."""
     argv = sys.argv[sys.argv.index("--") + 1:]
+    smpl_x = False
+    if "--smpl-x" in argv:
+        smpl_x = True
+        argv = [a for a in argv if a != "--smpl-x"]
     if len(argv) < 3:
         print("usage: blender --background --python blender_fbx_to_blob.py -- "
-              "<mixamo.fbx> <smpl_rest.npz> <output.bin>",
+              "<mixamo.fbx> <smpl_rest.npz> <output.bin> [--smpl-x]",
               file=sys.stderr)
         sys.exit(1)
-    return argv[0], argv[1], argv[2]
+    return argv[0], argv[1], argv[2], smpl_x
 
 
 def load_smpl_rest_fallback(smpl_rest_npz_path):
@@ -174,26 +293,51 @@ def try_extract_mixamo_joints(armature):
             smpl_head[smpl_name] = world @ b.head_local
             smpl_bone[smpl_name] = b
 
+    # SMPL-X fallbacks: joints missing from the source rig get placed at a
+    # sensible parent position. They stay identity in every frame (no source
+    # bone → no rotation), and no vertex is weighted to them, so they don't
+    # affect the output visually.
+    FALLBACK_PARENT = {
+        # face joints → head
+        "jaw": "head", "L_eye": "head", "R_eye": "head",
+        # left fingers → L_wrist (parent of MANO chain)
+        **{f"L_{f}{i}": "L_wrist" for f in ("index", "middle", "pinky", "ring", "thumb")
+           for i in (1, 2, 3)},
+        # right fingers → R_wrist
+        **{f"R_{f}{i}": "R_wrist" for f in ("index", "middle", "pinky", "ring", "thumb")
+           for i in (1, 2, 3)},
+    }
     missing = [n for n in SMPL_JOINT_NAMES if n not in smpl_head]
     if missing:
-        print(f"     mixamo-mapping: missing {len(missing)} SMPL joints: {missing}")
-        return None
+        unfixable = [n for n in missing if n not in FALLBACK_PARENT]
+        if unfixable:
+            print(f"     mixamo-mapping: missing {len(unfixable)} joints w/o fallback: {unfixable}")
+            return None
+        for n in missing:
+            parent = FALLBACK_PARENT[n]
+            if parent not in smpl_head:
+                print(f"     ERROR: joint '{n}' fallback parent '{parent}' also missing")
+                return None
+            smpl_head[n] = smpl_head[parent]
+            smpl_bone[n] = smpl_bone[parent]
+        print(f"     {len(missing)} joints placed at fallback positions: {missing}")
 
-    # Build parents by walking each SMPL joint's source bone up to find an ancestor
-    # that also maps to some SMPL joint (its SMPL parent).
+    # Parents: prefer hardcoded SMPLX_PARENTS in SMPL-X mode, otherwise walk chain.
     smpl_idx = {n: i for i, n in enumerate(SMPL_JOINT_NAMES)}
-    parents = np.full(NUM_JOINTS, -1, dtype=np.int32)
-    for i, name in enumerate(SMPL_JOINT_NAMES):
-        b = smpl_bone[name].parent
-        while b is not None:
-            stripped = strip_prefix(b.name)
-            parent_smpl = MIXAMO_TO_SMPL.get(stripped)
-            if parent_smpl is not None:
-                parents[i] = smpl_idx[parent_smpl]
-                break
-            b = b.parent
+    if NUM_JOINTS == 55:
+        parents = np.asarray(SMPLX_PARENTS, dtype=np.int32).copy()
+    else:
+        parents = np.full(NUM_JOINTS, -1, dtype=np.int32)
+        for i, name in enumerate(SMPL_JOINT_NAMES):
+            b = smpl_bone[name].parent
+            while b is not None:
+                stripped = strip_prefix(b.name)
+                parent_smpl = MIXAMO_TO_SMPL.get(stripped)
+                if parent_smpl is not None:
+                    parents[i] = smpl_idx[parent_smpl]
+                    break
+                b = b.parent
 
-    # Convert to SMPL Y-up
     rest_joints = np.empty((NUM_JOINTS, 3), dtype=np.float32)
     for i, name in enumerate(SMPL_JOINT_NAMES):
         rest_joints[i] = blender_to_smpl(smpl_head[name])
@@ -551,7 +695,18 @@ def write_blob(out_path, rest_joints, parents, verts, faces, weights, uvs,
 
 
 def main():
-    mixamo_fbx, smpl_rest_npz, out_blob = parse_args()
+    global SMPL_JOINT_NAMES, MIXAMO_TO_SMPL, NUM_JOINTS
+    mixamo_fbx, smpl_rest_npz, out_blob, smpl_x = parse_args()
+
+    # Runtime mode switch: SMPL (24) or SMPL-X (55).
+    if smpl_x:
+        SMPL_JOINT_NAMES = SMPLX_JOINT_NAMES
+        MIXAMO_TO_SMPL = MIXAMO_TO_SMPLX
+        NUM_JOINTS = 55
+        print(f"[mode] SMPL-X (55 joints — body + hands, jaw/eyes identity)")
+    else:
+        NUM_JOINTS = 24
+        print(f"[mode] SMPL (24 joints — body only)")
 
     print(f"[1/7] Clearing scene, importing FBX: {mixamo_fbx}")
     clear_scene()

@@ -79,6 +79,9 @@ def main() -> int:
     ap.add_argument("--smpl-pkl", required=True, help="SMPL_NEUTRAL.pkl.")
     ap.add_argument("--out", required=True, help="Output blob path (e.g. smpl_model_custom.bin).")
     ap.add_argument("--blender", default=None, help="Path to blender executable (auto-detect if omitted).")
+    ap.add_argument("--smpl-x", action="store_true",
+                    help="Produce 55-joint SMPL-X blob (body + hands). Requires "
+                         "source rig to have finger bones (Mixamo default).")
     args = ap.parse_args()
 
     blender = args.blender or find_blender()
@@ -116,6 +119,8 @@ def main() -> int:
             smpl_rest_npz,
             str(out_path),
         ]
+        if args.smpl_x:
+            cmd.append("--smpl-x")
         print(f"[wrapper] launching: {' '.join(cmd)}")
         result = subprocess.run(cmd)
         if result.returncode != 0:

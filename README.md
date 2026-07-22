@@ -147,6 +147,50 @@ python -u main.py --source realsense --conf-thresh 0.3 `
 
 전체 플래그 목록: `python main.py --help`
 
+## GUI Launcher
+
+명령어 대신 GUI 로 실행 가능:
+
+```powershell
+cd python
+python launcher.py     # 또는 pythonw launcher.py (콘솔 없이)
+```
+
+- Detector 선택 (SAT-HMR / SMPLest-X)
+- Multi-Person 인원 수 (1-3, SAT-HMR 만)
+- 디버그 오버레이 on/off
+- Smoothing α 조정
+- 실행 / 정지 버튼 + 실시간 로그
+
+## 다중 인원 지원 (SAT-HMR)
+
+`--max-persons N` (1-3): 카메라 Z 기준 가까운 순으로 N 명 유지. Person 마다 tracker 가 stable id (1..N) 부여.
+
+**UE 설정**:
+1. 레벨에 `SMPLProceduralActor` N 개 인스턴스 배치 (`Ctrl+D` 로 복제)
+2. 각 액터 Details → **Person Id** = 1, 2, 3 (서로 다르게)
+3. **SMPL Blob Path** 는 모두 동일 (같은 마네킹) — 원하면 인원별 다른 blob/material 가능
+
+## SMPLest-X: SMPL-X (body + hands)
+
+손가락까지 애니메이션. SMPLest-X 는 무거운 모델 (687M) 이라 SAT-HMR 보다 느림 (5-7 FPS bf16).
+
+**한 번만 셋업**:
+- SMPLest-X repo clone: [MotrixLab/SMPLest-X](https://github.com/MotrixLab/SMPLest-X)
+- SMPL-X 모델 파일 → `SMPLest-X/human_models/human_model_files/smplx/`
+- SMPLest-X Huge 가중치 (8.2GB) → `SMPLest-X/pretrained_models/smplest_x_h/smplest_x_h.pth.tar`
+- 별도 conda env (smplestx) 권장: Python 3.10 + PyTorch nightly + `pip install -r requirements.txt` + chumpy
+
+**실행**:
+```powershell
+python -u main.py --source realsense `
+    --detector smplest-x --smplest-x-root <path> --smplest-x-ckpt smplest_x_h `
+    --joint-format smplx `
+    --smpl-native --pelvis-rest ../pelvis_rest.npy --swap-lr --depth-root-lock
+```
+
+**손까지 UE 에서 반영**: Ch17 등 캐릭터를 `--smpl-x` 로 blob 재생성 후 액터에 적용.
+
 ## 커스텀 캐릭터 사용 (Mixamo 등)
 
 기본 SMPL 마네킹 외에 Mixamo 캐릭터 등 임의 T-pose FBX 를 사용할 수 있습니다. Blender 헤드리스 자동 변환 도구 제공:
@@ -167,6 +211,12 @@ python tools/convert_fbx_to_blob.py `
 5. UV 추출
 6. Embedded 텍스처 PNG 자동 저장 (`<blob>_textures/` 폴더)
 7. Blob v3 파일 write
+
+**SMPL-X 55-joint blob 생성** (손가락까지):
+```powershell
+python tools/convert_fbx_to_blob.py --fbx <char>.fbx --smpl-pkl <path>/SMPL_NEUTRAL.pkl --out <char>_smplx.bin --smpl-x
+```
+Mixamo finger bones (Thumb/Index/Middle/Ring/Pinky × 3 joints × 2 hands = 30) 를 MANO 순서로 매핑. Pinky 없는 캐릭터 (Ch14 등) 는 wrist 위치에 fallback.
 
 **UE 에 적용**:
 1. `smpl_model_xxx_textures/` 폴더의 PNG 들을 UE Content Browser 로 드래그 (Texture2D 임포트)
