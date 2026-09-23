@@ -67,6 +67,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL")
     bool bInvertRootLR = true;
 
+    /** Snap the mesh vertically each frame so its lowest vertex sits on Z=0 (relative to
+     *  the actor origin). Compensates for camera-height variance that otherwise leaves
+     *  the mannequin floating or sinking. Jumping/crouching relative motion is lost
+     *  (the lowest point is always pinned) — disable if you need airborne poses. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL")
+    bool bGroundSnap = true;
+
     /** Enable foot IK: lock a foot's world position when its vertical velocity is low. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SMPL|FootIK")
     bool bEnableFootIK = true;

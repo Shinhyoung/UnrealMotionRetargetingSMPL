@@ -293,34 +293,59 @@ def try_extract_mixamo_joints(armature):
             smpl_head[smpl_name] = world @ b.head_local
             smpl_bone[smpl_name] = b
 
-    # SMPL-X fallbacks: joints missing from the source rig get placed at a
-    # sensible parent position. They stay identity in every frame (no source
-    # bone → no rotation), and no vertex is weighted to them, so they don't
-    # affect the output visually.
+    # Fallbacks: joints missing from the source rig get placed at a nearest
+    # available ancestor position. Chain (e.g. L_hand → L_wrist → L_elbow →
+    # L_shoulder) so an armless character (Mutant: no left hand) can still
+    # produce a valid armature; those joints never rotate and no vertex is
+    # weighted to them so the mesh is unaffected.
     FALLBACK_PARENT = {
         # face joints → head
         "jaw": "head", "L_eye": "head", "R_eye": "head",
-        # left fingers → L_wrist (parent of MANO chain)
+        # wrist / hand fall back up the arm chain
+        "L_wrist": "L_elbow", "L_hand": "L_wrist",
+        "R_wrist": "R_elbow", "R_hand": "R_wrist",
+        # SMPL-X finger joints → their side's wrist
         **{f"L_{f}{i}": "L_wrist" for f in ("index", "middle", "pinky", "ring", "thumb")
            for i in (1, 2, 3)},
-        # right fingers → R_wrist
         **{f"R_{f}{i}": "R_wrist" for f in ("index", "middle", "pinky", "ring", "thumb")
            for i in (1, 2, 3)},
     }
-    missing = [n for n in SMPL_JOINT_NAMES if n not in smpl_head]
-    if missing:
-        unfixable = [n for n in missing if n not in FALLBACK_PARENT]
-        if unfixable:
-            print(f"     mixamo-mapping: missing {len(unfixable)} joints w/o fallback: {unfixable}")
+
+    def resolve_fallback(name, seen=None):
+        seen = seen or set()
+        if name in seen:
             return None
-        for n in missing:
-            parent = FALLBACK_PARENT[n]
-            if parent not in smpl_head:
-                print(f"     ERROR: joint '{n}' fallback parent '{parent}' also missing")
-                return None
-            smpl_head[n] = smpl_head[parent]
-            smpl_bone[n] = smpl_bone[parent]
-        print(f"     {len(missing)} joints placed at fallback positions: {missing}")
+        if name in smpl_head:
+            return name
+        parent = FALLBACK_PARENT.get(name)
+        if parent is None:
+            return None
+        return resolve_fallback(parent, seen | {name})
+
+    still_missing = [n for n in SMPL_JOINT_NAMES if n not in smpl_head]
+    if still_missing:
+        original_missing = list(still_missing)
+        # Fixpoint iteration: some joints (fingers) depend on their wrist being
+        # placed first, so we retry until nothing changes.
+        for _ in range(4):
+            new_missing = []
+            for n in still_missing:
+                if n in smpl_head:
+                    continue
+                target = resolve_fallback(FALLBACK_PARENT.get(n) or n)
+                if target is None or target == n:
+                    new_missing.append(n)
+                    continue
+                smpl_head[n] = smpl_head[target]
+                smpl_bone[n] = smpl_bone[target]
+            if not new_missing:
+                still_missing = []
+                break
+            still_missing = new_missing
+        if still_missing:
+            print(f"     mixamo-mapping: unresolved joints: {still_missing}")
+            return None
+        print(f"     {len(original_missing)} joints placed at fallback positions: {original_missing}")
 
     # Parents: prefer hardcoded SMPLX_PARENTS in SMPL-X mode, otherwise walk chain.
     smpl_idx = {n: i for i, n in enumerate(SMPL_JOINT_NAMES)}

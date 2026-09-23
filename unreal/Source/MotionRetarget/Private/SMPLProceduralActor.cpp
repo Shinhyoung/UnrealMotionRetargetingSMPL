@@ -221,11 +221,19 @@ void ASMPLProceduralActor::Tick(float DeltaSeconds)
     //   Y shift = 2*RootTrans.X*100 → mannequin's world Y flips sign (L/R).
     const float RootXShiftCm = bInvertRootDepth ? (2.0f * RootTrans.Z * 100.0f) : 0.0f;
     const float RootYShiftCm = bInvertRootLR    ? (2.0f * RootTrans.X * 100.0f) : 0.0f;
+    float MinZ = TNumericLimits<float>::Max();
     for (int32 i = 0; i < N; ++i)
     {
         UEVerts[i] = SmplYupMetersToUEcm(SmplVertsYup[i]);
         UEVerts[i].X += RootXShiftCm;
         UEVerts[i].Y += RootYShiftCm;
+        if (UEVerts[i].Z < MinZ) { MinZ = UEVerts[i].Z; }
+    }
+    // ponytail: per-frame ground snap. Kills jump/crouch airborne motion;
+    // switch to first-frame-only calibration when someone wants those.
+    if (bGroundSnap && N > 0)
+    {
+        for (int32 i = 0; i < N; ++i) { UEVerts[i].Z -= MinZ; }
     }
 
     UpdateMeshFromSmplVerts();

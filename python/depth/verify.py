@@ -117,6 +117,9 @@ class DepthVerifier:
         except AttributeError:
             jr = np.asarray(jr)
         self.J_regressor = jr[:24].astype(np.float64)   # (24, 6890)
+        # Per-person temporal state for A/B/C stability (see corrected_root_smpl).
+        # Keyed by person_id; each entry holds smoothed pelvis pixel + last Z.
+        self._state: dict = {}
         print(f"[depth_verify] loaded J_regressor {self.J_regressor.shape} from {p.name}")
 
     def analyze(
@@ -187,14 +190,19 @@ class DepthVerifier:
         intrinsics: np.ndarray,           # (3, 3) intrinsics in SAT-HMR input_size frame
         depth_mm: np.ndarray,             # (H, W) uint16 depth (mm) aligned to color
         resize_rate: float,
-        sample_radius_px: int = 6,
+        sample_radius_px: int = 10,       # A: larger patch (21×21) → resilient to bbox jitter
         max_delta_m: float = 1.5,
+        person_id: int = 0,
+        pixel_smooth_alpha: float = 0.4,  # B: EMA on projected pixel (0=off, 1=no smoothing)
+        max_z_jump_m: float = 0.3,        # C: sanity cap on frame-to-frame Z change
     ) -> Optional[np.ndarray]:
         """Back-project pelvis 2D pixel + measured depth → SMPL Y-up meters.
 
-        Returns None if the depth sample at pelvis is invalid or the correction
-        would jump more than ``max_delta_m`` from SAT-HMR's estimate (guards
-        against a stray depth pixel on the background wall).
+        Stability improvements:
+          A) Wider sampling patch + 25th percentile (foreground bias) — robust
+             to bbox jitter that projects pelvis onto the edge of the person.
+          B) Temporal EMA on the projected pelvis pixel (per person_id).
+          C) Reject Z jumps > max_z_jump_m vs previous accepted Z (outlier).
         """
         fx = intrinsics[0, 0]
         fy = intrinsics[1, 1]
@@ -211,8 +219,17 @@ class DepthVerifier:
         u_input = fx * pelvis_cam[0] / z_pred + cx
         v_input = fy * pelvis_cam[1] / z_pred + cy
         rr = max(resize_rate, 1e-8)
-        u_orig = u_input / rr
-        v_orig = v_input / rr
+        u_orig_raw = u_input / rr
+        v_orig_raw = v_input / rr
+
+        # B: temporal EMA on pixel coords.
+        state = self._state.setdefault(int(person_id), {})
+        if "px" in state:
+            u_orig = pixel_smooth_alpha * u_orig_raw + (1 - pixel_smooth_alpha) * state["px"]
+            v_orig = pixel_smooth_alpha * v_orig_raw + (1 - pixel_smooth_alpha) * state["py"]
+        else:
+            u_orig, v_orig = u_orig_raw, v_orig_raw
+        state["px"], state["py"] = u_orig, v_orig
 
         h, w = depth_mm.shape
         cx_px = int(round(u_orig))
@@ -220,25 +237,31 @@ class DepthVerifier:
         if not (0 <= cx_px < w and 0 <= cy_px < h):
             return None
 
+        # A: wider patch + 25th percentile.
         r = sample_radius_px
         x0 = max(0, cx_px - r); x1 = min(w, cx_px + r + 1)
         y0 = max(0, cy_px - r); y1 = min(h, cy_px + r + 1)
         patch = depth_mm[y0:y1, x0:x1]
         valid = patch[patch > 0]
-        if valid.size < 4:
+        if valid.size < 20:
             return None
-        z_meas_m = float(np.median(valid)) / 1000.0
+        z_meas_m = float(np.percentile(valid, 25)) / 1000.0
         if not np.isfinite(z_meas_m) or z_meas_m <= 0.2 or z_meas_m > 8.0:
             return None
         if abs(z_meas_m - z_pred) > max_delta_m:
-            # Sanity: depth pixel probably landed on background — ignore.
             return None
 
-        # Back-project the pelvis pixel through the measured depth.
-        # Work in input-frame pixels (cheaper: reuse fx/fy/cx/cy).
-        x_cam = (u_input - cx) * z_meas_m / fx
-        y_cam = (v_input - cy) * z_meas_m / fy
-        # OpenCV Y-down → SMPL Y-up: flip Y.
+        # C: outlier rejection vs previous Z (fresh person → accept first sample).
+        last_z = state.get("z")
+        if last_z is not None and abs(z_meas_m - last_z) > max_z_jump_m:
+            return None
+        state["z"] = z_meas_m
+
+        # Back-project through smoothed input-frame pixel.
+        u_input_s = u_orig * rr
+        v_input_s = v_orig * rr
+        x_cam = (u_input_s - cx) * z_meas_m / fx
+        y_cam = (v_input_s - cy) * z_meas_m / fy
         return np.array([x_cam, -y_cam, z_meas_m], dtype=np.float64)
 
 

@@ -86,6 +86,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--show-mesh", action="store_true",
                    help="With --debug, overlay SAT-HMR SMPL mesh on the source frame "
                         "(uses SAT-HMR's own vis_meshes_img; requires pyrender).")
+    p.add_argument("--camera-only", action="store_true",
+                   help="With --debug, show raw camera only (no bbox/HUD/mesh).")
     p.add_argument("--max-frames", type=int, default=0,
                    help="Stop after N frames (0 = run until source ends).")
     p.add_argument("--smooth-alpha", type=float, default=0.5,
@@ -384,6 +386,11 @@ def main() -> int:
     if args.show_mesh:
         settings.debug.show_mesh = True
         debug_on = True
+    if args.camera_only:
+        settings.debug.show_mesh = False
+        settings.debug.show_bbox = False
+        settings.debug.show_hud = False
+        debug_on = True
 
     # keep_debug_output also required for depth verify (needs mesh verts + intrinsics)
     keep_debug = (debug_on or args.use_depth or args.depth_root_lock) and not args.mock
@@ -498,12 +505,13 @@ def main() -> int:
                     root_old = det.root_position.copy()
                     root_new = None
                     if det.debug_verts is not None and det.debug_intrinsics is not None:
-                        # SAT-HMR: full back-project via mesh + intrinsics
+                        # SAT-HMR: mesh-projection + per-person state (A/B/C).
                         root_new = depth_root_lock.corrected_root_smpl(
                             mesh_verts_cam=det.debug_verts,
                             intrinsics=det.debug_intrinsics,
                             depth_mm=depth_frame,
                             resize_rate=det.debug_resize_rate or 1.0,
+                            person_id=int(det.person_id or 0),
                         )
                     elif det.bbox is not None:
                         # SMPLest-X (or any detector w/o mesh): bbox-center depth sample

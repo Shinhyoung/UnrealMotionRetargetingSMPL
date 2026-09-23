@@ -37,7 +37,7 @@ COMMON_ARGS = [
 ]
 
 
-def build_command(detector: str, debug: bool, smooth_alpha: float, root_alpha: float,
+def build_command(detector: str, debug_mode: str, smooth_alpha: float, root_alpha: float,
                   max_persons: int):
     if detector == "smplest-x":
         py = SMPLESTX_PY
@@ -55,8 +55,10 @@ def build_command(detector: str, debug: bool, smooth_alpha: float, root_alpha: f
         "--smooth-root-alpha", str(root_alpha),
         "--max-persons", str(max_persons),
     ] + extra
-    if debug:
+    if debug_mode == "mesh":
         cmd += ["--debug", "--show-mesh"]
+    elif debug_mode == "camera":
+        cmd += ["--debug", "--camera-only"]
     return cmd, py
 
 
@@ -91,12 +93,16 @@ class App:
         ttk.Label(pp_frame, text="(place N SMPLProceduralActor instances in UE, "
                                  "each with PersonId = 1..N)").pack(side="left", padx=(10, 0))
 
-        # --- Debug overlay ---
-        dbg_frame = ttk.LabelFrame(root, text="Options", padding=10)
+        # --- Debug preview ---
+        dbg_frame = ttk.LabelFrame(root, text="Debug Preview (OpenCV window)", padding=10)
         dbg_frame.pack(fill="x", padx=10, pady=6)
-        self.debug = tk.BooleanVar(value=False)
-        ttk.Checkbutton(dbg_frame, text="Debug overlay window (OpenCV mesh preview)",
-                        variable=self.debug).pack(anchor="w")
+        self.debug_mode = tk.StringVar(value="off")
+        ttk.Radiobutton(dbg_frame, text="없음 (Off)",
+                        variable=self.debug_mode, value="off").pack(anchor="w")
+        ttk.Radiobutton(dbg_frame, text="카메라 영상만 (Camera only)",
+                        variable=self.debug_mode, value="camera").pack(anchor="w")
+        ttk.Radiobutton(dbg_frame, text="카메라 + 메쉬 오버레이 (Camera + mesh)",
+                        variable=self.debug_mode, value="mesh").pack(anchor="w")
 
         # --- Smoothing ---
         sm_frame = ttk.LabelFrame(root, text="Smoothing (0.05 = heavy, 1.0 = none)", padding=10)
@@ -149,7 +155,7 @@ class App:
             return
         cmd, py = build_command(
             self.detector.get(),
-            self.debug.get(),
+            self.debug_mode.get(),
             float(self.smooth_alpha.get()),
             float(self.root_alpha.get()),
             int(self.max_persons.get()),
